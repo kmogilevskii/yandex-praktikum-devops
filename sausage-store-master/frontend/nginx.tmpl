@@ -1,0 +1,53 @@
+{{ range $host, $containers := groupBy $ "Env.VIRTUAL_HOST" }}
+upstream {{ $host }} {
+
+{{ range $index, $value := $containers }}
+    {{ with $address := index $value.Addresses 0 }}
+    server {{ $value.Hostname }}:{{ $address.Port }};
+    {{ end }}
+{{ end }}
+
+}
+
+server {
+  listen 80;
+
+  listen 443 ssl;
+  server_name student.student-glava8-fernandaribeiro.com student-glava8-fernandaribeiro.com;
+
+  server_tokens off;
+
+  ssl_certificate     /app/certs/live/student-glava8-fernandaribeiro.com/fullchain.pem;
+  ssl_certificate_key /app/certs/live/student-glava8-fernandaribeiro.com/privkey.pem;
+
+  ssl_buffer_size 8k;
+
+  ssl_protocols TLSv1.2;
+  ssl_prefer_server_ciphers on;
+
+  ssl_ciphers ECDH+AESGCM:ECDH+AES256:ECDH+AES128:DH+3DES:!ADH:!AECDH:!MD5;
+
+  ssl_ecdh_curve secp384r1;
+  ssl_session_tickets off;
+
+  ssl_stapling on;
+  ssl_stapling_verify on;
+  resolver 8.8.8.8;
+
+  location / {
+    root   /usr/share/nginx/html;
+    index  index.html;
+    try_files $uri $uri/ /index.html;
+  }
+
+  location /api {
+      proxy_pass http://{{ $host }};
+      add_header X-Frame-Options "SAMEORIGIN" always;
+      add_header X-XSS-Protection "1; mode=block" always;
+      add_header X-Content-Type-Options "nosniff" always;
+      add_header Referrer-Policy "no-referrer-when-downgrade" always;
+      add_header Content-Security-Policy "default-src * data: 'unsafe-eval' 'unsafe-inline'" always;
+
+  }
+}
+{{ end }}

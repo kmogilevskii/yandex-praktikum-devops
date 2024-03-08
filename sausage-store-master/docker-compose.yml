@@ -1,0 +1,74 @@
+version: "3.3"
+
+services:
+  backend-blue:
+    image: gitlab.praktikum-services.ru:5050/std-018-012/sausage-store/sausage-backend:latest
+    container_name: sausage-store-backend-blue
+    restart: always
+    environment:
+      SPRING_DATASOURCE_USERNAME: ${PSQL_USER}
+      SPRING_DATASOURCE_PASSWORD: ${PSQL_PASSWORD}
+      SPRING_DATASOURCE_URL: ${PSQL_DATASOURCE}
+      SPRING_FLYWAY_BASELINE-ON-MIGRATE: "true"
+      VIRTUAL_HOST: sausage-backend
+    healthcheck:
+      test: curl --fail -s http://localhost:8080/actuator/health
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 6
+    ports:
+      - "8080:8080"
+    networks:
+      - sausage_network
+
+  backend-green:
+    image: gitlab.praktikum-services.ru:5050/std-018-012/sausage-store/sausage-backend:latest
+    container_name: sausage-store-backend-green
+    restart: always
+    environment:
+      SPRING_DATASOURCE_USERNAME: ${PSQL_USER}
+      SPRING_DATASOURCE_PASSWORD: ${PSQL_PASSWORD}
+      SPRING_DATASOURCE_URL: ${PSQL_DATASOURCE}
+      SPRING_FLYWAY_BASELINE-ON-MIGRATE: "true"
+      VIRTUAL_HOST: sausage-backend
+    healthcheck:
+      test: curl --fail -s http://localhost:8081/actuator/health
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 6
+    ports:
+      - "8081:8080"
+    networks:
+      - sausage_network
+
+  backend-report:
+    image: gitlab.praktikum-services.ru:5050/std-018-012/sausage-store/sausage-backend-report:latest
+    container_name: sausage-store-backend-report
+    environment:
+      DB: ${MONGO_DATA}
+    restart: always
+#    ports:
+#      - "8081:5000"
+    networks:
+      - sausage_network
+
+  frontend:
+    image: gitlab.praktikum-services.ru:5050/std-018-012/sausage-store/sausage-frontend:latest
+    container_name: sausage-store-frontend
+    restart: always
+    environment:
+      DEFAULT_HOST: sausage-backend
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/tmp/docker.sock:ro
+      - /etc/letsencrypt:/app/certs
+    networks:
+      - sausage_network
+
+networks:
+  sausage_network:
+    external: true

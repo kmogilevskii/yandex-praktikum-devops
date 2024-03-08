@@ -1,0 +1,30 @@
+.deploy:
+  stage: deploy
+  image: docker:dind
+#  rules:
+#    - when: manual
+  before_script:
+    - 'command -v ssh-agent >/dev/null || ( apk update && apk add openssh)'
+    - eval $(ssh-agent -s)
+    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - cp "$SSH_KNOWN_HOSTS" ~/.ssh/known_hosts
+    - chmod 644 ~/.ssh/known_hosts
+    - echo "$SSH_PRIVATE_KEY" >> ~/.ssh/id_rsa
+    - until docker info; do sleep 1; done
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+    - apk add --update python py-pip python-dev && pip install docker-compose # install docker-compose
+    - apk add curl
+  environment:
+    name: production
+    url: http://${DEV_HOST}:80
+    on_stop: stop_deploy
+
+
+.notify:
+  stage: notify
+  rules:
+    - if: $CI_COMMIT_MESSAGE !~ /send notification/
+      when: never
+    - when: always

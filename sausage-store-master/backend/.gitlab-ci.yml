@@ -1,0 +1,131 @@
+include:
+ - local: templates.yml
+ - template: Security/SAST.gitlab-ci.yml
+ - project: 'templates/ci'
+   file: 'DockerInDockerTemplate.yml'
+
+cache:
+  paths:
+    - ${CI_PROJECT_DIR}/.m2/repository
+
+variables:
+   VERSION: 1.0.${CI_PIPELINE_ID}
+   MAVEN_REPO_PATH: ${CI_PROJECT_DIR}/.m2/repository
+   JAVA_OPTS: -XX:MaxRAMPercentage=90 # для того, чтобы Maven не съел всю свободную оперативку
+   SAST_EXCLUDED_ANALYZERS: "nodejs-scan-sast"
+
+stages:
+- build
+- notify
+- test
+- release
+- deploy
+- smoke-test
+
+build:
+   stage: build
+   image:
+     name: gcr.io/kaniko-project/executor:v1.9.0-debug
+     entrypoint: [""]
+   only:
+     changes:
+       - backend/**/*
+   script:
+      - /kaniko/executor
+        --build-arg VERSION=$VERSION
+        --context "${CI_PROJECT_DIR}/backend"
+        --dockerfile "${CI_PROJECT_DIR}/backend/Dockerfile"
+        --destination "${CI_REGISTRY_IMAGE}/sausage-backend:${CI_COMMIT_SHA}"
+
+sast:
+  stage: test
+
+spotbugs-sast:
+  stage: test
+  variables:
+    COMPILE: "false"
+    SAST_JAVA_VERSION: 11
+    MAVEN_REPO_PATH: ${CI_PROJECT_DIR}/.m2/repository
+
+sonarqube-test:
+  stage: test
+  only:
+    changes:
+      - backend/**/*
+  image: maven:3.8-openjdk-16
+  script:
+    - cd backend
+    - >
+      mvn verify sonar:sonar -Dsonar.qualitygate.wait=true
+      -Dsonar.projectKey=${SQ_PROJECT_KEY_BACKEND}
+      -Dsonar.projectName=${SQ_PROJECT_KEY_BACKEND}
+      -Dsonar.host.url=${SQ_URL}
+      -Dsonar.login=${SQ_BACKEND}
+  variables:
+    SPRING_CLOUD_VAULT_ENABLED: "false"
+
+release:
+   variables:
+     GIT_STRATEGY: none
+   image: docker:20.10.12-dind-rootless
+   stage: release
+   only:
+     changes:
+       - backend/**/*
+   before_script:
+     - until docker info; do sleep 1; done
+     - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+   script:
+     - docker pull $CI_REGISTRY_IMAGE/sausage-backend:$CI_COMMIT_SHA
+     - docker tag $CI_REGISTRY_IMAGE/sausage-backend:$CI_COMMIT_SHA $CI_REGISTRY_IMAGE/sausage-backend:latest
+     - docker push $CI_REGISTRY_IMAGE/sausage-backend:latest
+
+deploy:
+  extends: .deploy
+  script:
+    - docker context create remote --docker "host=ssh://${DEV_USER}@${DEV_HOST}"
+    - docker --context remote network create -d bridge sausage_network || true
+    - docker --context remote login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+    - docker --context remote pull ${CI_REGISTRY}/std-018-012/sausage-store/sausage-backend:latest
+    - |
+      if [ ! -z `docker-compose --context remote ps -q backend-blue` ] || [ ! -z `docker --context remote ps -q --no-trunc | grep $(docker-compose --context remote ps -q backend-blue)` ]; then
+        echo "backend-blue is running, spinning up backend-green"
+        docker-compose --context remote up -d --force-recreate backend-green
+        sleep 30
+        if [ $(curl -LI http://${DEV_HOST}:8081/api/products -o /dev/null -w '%{http_code}\n' -s) == "200" ]; then
+          echo "Health Check on the backend-green ran successfully. Shutting down backend-blue."
+          docker-compose --context remote stop backend-blue
+        else 
+          echo "Health Check on the backend-green didn't ran successfully. Staying on the backend-blue."
+          docker-compose --context remote rm -s -v backend-green
+          exit 1
+        fi
+      else
+        echo "backend-green is running, spinning up backend-blue"
+        docker-compose --context remote up -d --force-recreate backend-blue
+        sleep 30
+        if [ $(curl -LI http://${DEV_HOST}:8080/api/products -o /dev/null -w '%{http_code}\n' -s) == "200" ]; then 
+          echo "Health Check on the backend-blue ran successfully. Shutting down backend-green"
+          docker-compose --context remote stop backend-green
+        else 
+          echo "Health Check on the backend-blue didn't ran successfully. Staying on the backend-green."
+          docker-compose --context remote rm -s -v backend-blue
+          exit 1
+        fi
+      fi
+
+stop_deploy:
+  stage: deploy
+#  rules:
+#    - when: manual
+  script:
+    - echo "Remove sausage store environment"
+  environment:
+    name: production
+    url: http://${DEV_HOST}:8080
+    action: stop
+
+notify:
+  extends: .notify
+  script:
+    - 'curl -X POST -H "Content-type: application/json" --data "{\"chat_id\": \"$CHAT_ID\", \"text\": \"Вышла новая версия бэк сосисочной - sausage-store-${VERSION}.jar. Скачать бэк можно по ссылке - https://nexus.k8s.praktikum-services.tech/repository/sausage-store-fernanda-ribeiro-backend/com/yandex/practicum/devops/sausage-store/$VERSION/sausage-store-$VERSION.jar\"}" $TELEGRAM_WEBHOOK_URL'

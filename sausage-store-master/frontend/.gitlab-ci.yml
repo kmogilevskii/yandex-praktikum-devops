@@ -1,0 +1,105 @@
+include:
+ - local: templates.yml
+ - project: 'templates/ci'
+   file: 'DockerInDockerTemplate.yml'
+
+cache:
+  paths:
+    - frontend/dist/frontend
+
+variables:
+  VERSION: 1.0.${CI_PIPELINE_ID}
+
+stages:
+- build
+- notify
+- test
+- release
+- deploy
+
+#save_base_images:
+#  stage: build
+#  variables:
+#    GIT_STRATEGY: none
+#  image: docker:20.10.12-dind-rootless
+#  only:
+#     changes:
+#       - frontend/**/*
+#  before_script:
+#     - until docker info; do sleep 1; done
+#     - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+#  script:
+#    - docker pull certbot/certbot:v2.5.0
+#    - docker image tag certbot/certbot:v2.5.0 $CI_REGISTRY_IMAGE/certbot:v2.5.0
+#    - docker image push $CI_REGISTRY_IMAGE/certbot:v2.5.0
+
+
+build:
+   stage: build
+   image:
+     name: gcr.io/kaniko-project/executor:v1.9.0-debug
+     entrypoint: [""]
+   only:
+     changes:
+       - frontend/**/*
+   script:
+      - /kaniko/executor
+        --context "${CI_PROJECT_DIR}/frontend"
+        --dockerfile "${CI_PROJECT_DIR}/frontend/Dockerfile"
+        --destination "${CI_REGISTRY_IMAGE}/sausage-frontend:${CI_COMMIT_SHA}"
+
+sonarqube-test:
+  stage: test
+  only:
+    changes:
+      - frontend/**/*
+  image: node:16.0.0
+  script:
+    - npm install sonarqube-scanner -g
+    - cd frontend
+    - >
+      sonar-scanner -Dsonar.qualitygate.wait=true
+      -Dsonar.projectKey=${SQ_PROJECT_KEY_FRONTEND}
+      -Dsonar.projectName=${SQ_PROJECT_KEY_FRONTEND}
+      -Dsonar.sources=.
+      -Dsonar.host.url=${SQ_URL}
+      -Dsonar.login=${SQ_FRONTEND}
+
+release:
+   variables:
+     GIT_STRATEGY: none
+   image: docker:20.10.12-dind-rootless
+   stage: release
+   only:
+     changes:
+       - frontend/**/*
+   before_script:
+     - until docker info; do sleep 1; done
+     - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+   script:
+     - docker pull $CI_REGISTRY_IMAGE/sausage-frontend:$CI_COMMIT_SHA
+     - docker tag $CI_REGISTRY_IMAGE/sausage-frontend:$CI_COMMIT_SHA $CI_REGISTRY_IMAGE/sausage-frontend:latest
+     - docker push $CI_REGISTRY_IMAGE/sausage-frontend:latest
+
+deploy:
+  extends: .deploy
+  script:
+    - docker context create remote --docker "host=ssh://${DEV_USER}@${DEV_HOST}"
+    - docker-compose --context remote up -d --force-recreate frontend
+
+stop_deploy:
+  stage: deploy
+#  rules:
+#    - when: manual
+  script:
+    - echo "Remove sausage store environment"
+  environment:
+    name: production
+    url: http://${DEV_HOST}:80
+    action: stop
+
+notify:
+  extends: .notify
+  script:
+    - 'curl -X POST -H "Content-type: application/json" --data "{\"chat_id\": \"$CHAT_ID\", \"text\": \"Вышла новая версия фронт сосисочной - sausage-store-${VERSION}.tar.gz. Скачать фронт можно по ссылке - https://nexus.k8s.praktikum-services.tech/repository/sausage-store-fernanda-ribeiro-frontend/sausage-store/$VERSION/sausage-store-$VERSION.tar.gz\"}" $TELEGRAM_WEBHOOK_URL'
+
